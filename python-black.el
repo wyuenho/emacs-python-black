@@ -184,7 +184,8 @@ occured on the server."
     (request
       (format "http://%s:%s" python-black-d-host python-black-d-port)
       :type "POST"
-      :headers (funcall python-black-d-request-headers-function)
+      :headers (and (functionp python-black-d-request-headers-function)
+                    (funcall python-black-d-request-headers-function))
       :data (buffer-string)
       :parser 'buffer-string
       :status-code `((200 . ,(cl-function
@@ -279,7 +280,8 @@ message returned."
   "Stop the `blackd' server process."
   (when (process-live-p python-black-d-process)
     (kill-process python-black-d-process))
-  (when (buffer-live-p (process-buffer python-black-d-process))
+  (when (and python-black-d-process
+             (buffer-live-p (process-buffer python-black-d-process)))
     (kill-buffer (process-buffer python-black-d-process)))
   (setf python-black-d-process nil
         python-black-d-server-ready nil))

@@ -194,15 +194,7 @@ occured on the server."
                                 ;; should consider using `diff-apply-hunk' to
                                 ;; apply changes in the future if this method is
                                 ;; too slow.
-                                (let ((temp-file (reformatter-temp-file-in-current-directory nil data)))
-                                  (unwind-protect
-                                      (progn
-                                        (save-restriction
-                                          (narrow-to-region (point-min) (point-max))
-                                          (reformatter-replace-buffer-contents-from-file temp-file))
-                                        (message "Buffer formatted")
-                                        (funcall success))
-                                    (delete-file temp-file))))))
+                                (replace-region-contents (point-min) (point-max) (lambda () data)))))
                      (204 . ,(lambda (&rest _)
                                (message "Buffer already formatted")
                                (funcall success)))

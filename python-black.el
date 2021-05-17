@@ -316,7 +316,8 @@ message returned."
 
 (add-hook 'python-black-on-save-mode-hook
           (lambda ()
-            (when (executable-find python-black-d-command)
+            (when (and python-black-d-command
+                       (executable-find python-black-d-command))
               (if python-black-on-save-mode
                   (progn
                     (remove-hook 'before-save-hook 'python-black-buffer t)

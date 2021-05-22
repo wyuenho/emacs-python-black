@@ -353,7 +353,7 @@ If `python-black-on-save-mode' is non-nil, and
 `python-black-d-command' is found, replace `python-black-buffer'
 with `python-black-d-buffer' in the buffer-local
 `before-save-hook'."
-  (when (executable-find python-black-d-command)
+  (when (and python-black-d-command (executable-find python-black-d-command))
     (if python-black-on-save-mode
         (progn
           (python-black-d-start-server)

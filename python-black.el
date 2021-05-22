@@ -3,7 +3,7 @@
 ;; Author: wouter bolsterlee <wouter@bolsterl.ee>
 ;; Keywords: languages
 ;; URL: https://github.com/wbolster/emacs-python-black
-;; Package-Requires: ((emacs "26.1") (dash "2.16.0") (reformatter "0.3") (request "0.3.2") (promise "1.1"))
+;; Package-Requires: ((emacs "26.1") (dash "2.16.0") (reformatter "0.3") (request "0.3.2"))
 ;; Version: 1.0.0
 
 ;; Copyright 2019 wouter bolsterlee. Licensed under the 3-Clause BSD License.
@@ -15,13 +15,14 @@
 ;;; Code:
 
 (require 'ansi-color)
+(require 'diff-mode)
 (require 'cl-lib)
 (require 'dash)
-(require 'promise)
 (require 'python)
 (require 'reformatter)
 (require 'request)
 (require 'rx)
+(require 'url)
 
 (defgroup python-black nil
   "Python reformatting using black."
@@ -64,7 +65,12 @@
   :group 'python-black
   :type 'integer)
 
-(defcustom python-black-d-request-headers-function nil
+(defcustom python-black-d-request-timeout 1
+  "Timeout for requests to `blackd' in seconds."
+  :group 'python-black
+  :type 'integer)
+
+(defcustom python-black-d-request-headers-function 'python-black-d-default-request-headers-function
   "Function that returns `blackd' request headers.
 
 When set, the function value must accept no argument and return an
@@ -81,6 +87,32 @@ the current buffer is the buffer being formatted."
 
 (defconst python-black-d-process-buffer-name "*blackd*"
   "The name of the `blackd' process buffer.")
+
+(defvar python-black-d-task-queue nil
+  "Queue for pending formatting operations while the server is starting up.")
+
+(defun python-black-d-clear-queue ()
+  "Clear `python-black-d-task-queue'."
+  (setf python-black-d-task-queue nil))
+
+(defun python-black-d-push-queue (op)
+  "Enqueue a new opertaion OP to `python-black-d-task-queue'."
+  (push op python-black-d-task-queue))
+
+(defun python-black-d-process-task-queue ()
+  "Process all pending formatting operations.
+
+Duplicate operations are not repeated and only the first one will
+be executed."
+  (when python-black-d-task-queue
+    (run-hooks (delete-dups (reverse python-black-d-task-queue)))
+    (python-black-d-clear-queue)))
+
+(defun python-black-d--clean-up ()
+  "Internal function to clean up state variables."
+  (python-black-d-clear-queue)
+  (setf python-black-d-process nil
+        python-black-d-server-ready nil))
 
 ;;;###autoload
 (defun python-black-on-save-mode-enable-dwim ()
@@ -180,30 +212,33 @@ SUCCESS will be called when the server returns a formatted string
 or if the buffer is already formatted.  FAILURE will be called is
 the file consists of syntax errors or if an internal failure
 occured on the server."
-  (with-current-buffer buffer
-    (request
-      (format "http://%s:%s" python-black-d-host python-black-d-port)
-      :type "POST"
-      :headers (and (functionp python-black-d-request-headers-function)
-                    (funcall python-black-d-request-headers-function))
-      :data (buffer-string)
-      :parser 'buffer-string
-      :status-code `((200 . ,(cl-function
-                              (lambda (&key data &allow-other-keys)
-                                ;; `blackd' can generate unified diffs, we
-                                ;; should consider using `diff-apply-hunk' to
-                                ;; apply changes in the future if this method is
-                                ;; too slow.
-                                (replace-region-contents (point-min) (point-max) (lambda () data)))))
-                     (204 . ,(lambda (&rest _)
-                               (message "Buffer already formatted")
-                               (funcall success)))
-                     (400 . ,(cl-function
-                              (lambda (&key data &allow-other-keys)
-                                (funcall failure (format "Syntax Error: %s" data)))))
-                     (500 . ,(cl-function
-                              (lambda (&key data &allow-other-keys)
-                                (funcall failure (format "Error: %s" (car data))))))))))
+  (request
+    (format "http://%s:%s" python-black-d-host python-black-d-port)
+    :sync t
+    :type "POST"
+    :headers (and (functionp python-black-d-request-headers-function)
+                  (with-current-buffer buffer
+                    (funcall python-black-d-request-headers-function)))
+    :data (buffer-string)
+    :parser 'buffer-string
+    :status-code `((200 . ,(cl-function
+                            (lambda (&key data &allow-other-keys)
+                              (let ((temp-file (reformatter-temp-file-in-current-directory nil data)))
+                                (unwind-protect
+                                    (with-current-buffer buffer
+                                      (save-restriction
+                                        (narrow-to-region (point-min) (point-max))
+                                        (reformatter-replace-buffer-contents-from-file temp-file)))
+                                  (funcall success "Buffer formatted")
+                                  (delete-file temp-file))))))
+                   (204 . ,(lambda (&rest _)
+                             (funcall success "Buffer already formatted")))
+                   (400 . ,(cl-function
+                            (lambda (&key data &allow-other-keys)
+                              (funcall failure (format "Syntax Error: %s" data)))))
+                   (500 . ,(cl-function
+                            (lambda (&key data &allow-other-keys)
+                              (funcall failure (format "Error: %s" (car data)))))))))
 
 (defun python-black-d-poll-until-ready (success failure)
   "Poll the `blackd' server every second until it is ready to format.
@@ -217,16 +252,24 @@ message returned."
     :type "POST"
     :data "print('valid')"
     :parser 'buffer-string
-    :timeout 1
+    :timeout python-black-d-request-timeout
     :error (cl-function
             (lambda (&key data symbol-status &allow-other-keys)
               (if (eq symbol-status 'timeout)
-                  (run-at-time 1 nil 'python-black-d-poll-until-ready success failure)
+                  (run-at-time python-black-d-request-timeout
+                               nil
+                               'python-black-d-poll-until-ready
+                               success
+                               failure)
                 (funcall failure (format "`blackd' server error: %s" data)))))
     :status-code `((200 . ,(lambda (&rest _) (funcall success))))))
 
 (defun python-black-d-start-server ()
-  "Start the `blackd' server process."
+  "Start the `blackd' server process.
+
+If there are pending operations in `python-black-d-task-queue',
+the operations will be executed in first-in-first-out order as
+soon as the server is ready to accept requests."
   (unless python-black-d-process
     (setf python-black-d-process
           (make-process
@@ -247,26 +290,24 @@ message returned."
                           "--bind-port" (format "%s" python-black-d-port))
            :sentinel (lambda (process _)
                        (when (eq (process-status process) 'exit)
-                         (setf python-black-d-process nil
-                               python-black-d-server-ready nil)
                          (when (buffer-live-p (process-buffer process))
                            (kill-buffer (python-black-d-process-buffer)))
-                         (message "blackd server has exited"))))
-          python-black-d-server-ready
-          (promise-chain
-              (promise-new (lambda (resolve reject)
-                             (if (eq (process-status python-black-d-process) 'run)
-                                 (progn
-                                   (sit-for 2)
-                                   (python-black-d-poll-until-ready
-                                    (lambda ()
-                                      (message "blackd server ready")
-                                      (funcall resolve python-black-d-process))
-                                    reject))
-                               (funcall reject "Unable to start blackd process"))))
-            (catch (lambda (reason)
-                     (message reason)
-                     (promise-reject reason)))))))
+                         (python-black-d--clean-up)
+                         (message "blackd server has exited")))))
+
+    (if (eq (process-status python-black-d-process) 'run)
+        (progn
+          (sit-for 2)
+          (python-black-d-poll-until-ready
+           (lambda ()
+             (setf python-black-d-server-ready t)
+             (message "blackd server ready")
+             (python-black-d-process-task-queue))
+           (lambda (err-msg)
+             (python-black-d--clean-up)
+             (message err-msg))))
+      (python-black-d--clean-up)
+      (message "Unable to start blackd process"))))
 
 (defun python-black-d-stop-server ()
   "Stop the `blackd' server process."
@@ -275,8 +316,7 @@ message returned."
   (when (and python-black-d-process
              (buffer-live-p (process-buffer python-black-d-process)))
     (kill-buffer (process-buffer python-black-d-process)))
-  (setf python-black-d-process nil
-        python-black-d-server-ready nil))
+  (python-black-d--clean-up))
 
 ;;;###autoload
 (defun python-black-d-restart-server ()
@@ -289,13 +329,13 @@ message returned."
 (defun python-black-d-buffer ()
   "Reformats the current buffer with `blackd'."
   (interactive)
-  (promise-chain python-black-d-server-ready
-    (then (lambda (_)
-            (promise-new
-             (lambda (resolve reject)
-               (python-black-d-format-buffer (current-buffer) resolve reject)))))
-    (catch (lambda (reason)
-             (message reason)))))
+  (if python-black-d-server-ready
+      (python-black-d-format-buffer (current-buffer) 'message 'message)
+    (cond ((and (not (process-live-p python-black-d-process))
+                (y-or-n-p "The blackd server process has not started, would you like to start it? "))
+           (python-black-d-push-queue 'python-black-d-buffer)
+           (python-black-d-start-server))
+          (t (python-black-d-push-queue 'python-black-d-buffer)))))
 
 ;;;###autoload (autoload 'python-black-buffer "python-black" nil t)
 ;;;###autoload (autoload 'python-black-region "python-black" nil t)
@@ -306,17 +346,23 @@ message returned."
   :lighter " BlackFMT"
   :group 'python-black)
 
-(add-hook 'python-black-on-save-mode-hook
-          (lambda ()
-            (when (and python-black-d-command
-                       (executable-find python-black-d-command))
-              (if python-black-on-save-mode
-                  (progn
-                    (remove-hook 'before-save-hook 'python-black-buffer t)
-                    (python-black-d-start-server)
-                    (add-hook 'before-save-hook 'python-black-d-buffer nil t))
-                (python-black-d-stop-server)
-                (remove-hook 'before-save-hook 'python-black-d-buffer t)))))
+(defun python-black-d-toggle ()
+  "Set up `blackd' if possible.
+
+If `python-black-on-save-mode' is non-nil, and
+`python-black-d-command' is found, replace `python-black-buffer'
+with `python-black-d-buffer' in the buffer-local
+`before-save-hook'."
+  (when (executable-find python-black-d-command)
+    (if python-black-on-save-mode
+        (progn
+          (python-black-d-start-server)
+          (remove-hook 'before-save-hook 'python-black-buffer t)
+          (add-hook 'before-save-hook 'python-black-d-buffer nil t))
+      (python-black-d-stop-server)
+      (remove-hook 'before-save-hook 'python-black-d-buffer t))))
+
+(add-hook 'python-black-on-save-mode-hook 'python-black-d-toggle)
 
 (provide 'python-black)
 ;;; python-black.el ends here

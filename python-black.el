@@ -15,14 +15,12 @@
 ;;; Code:
 
 (require 'ansi-color)
-(require 'diff-mode)
 (require 'cl-lib)
 (require 'dash)
 (require 'python)
 (require 'reformatter)
 (require 'request)
 (require 'rx)
-(require 'url)
 
 (defgroup python-black nil
   "Python reformatting using black."

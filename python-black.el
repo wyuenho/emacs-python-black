@@ -77,16 +77,16 @@ the current buffer is the buffer being formatted."
   :group 'python-black
   :type '(choice function (const :tag "None" nil)))
 
-(defvar python-black-d-process nil
+(defvar-local python-black-d-process nil
   "The `blackd' process object.")
 
-(defvar python-black-d-server-ready nil
+(defvar-local python-black-d-server-ready nil
   "Whether the `blackd' server is ready to accept requests.")
 
 (defconst python-black-d-process-buffer-name "*blackd*"
   "The name of the `blackd' process buffer.")
 
-(defvar python-black-d-task-queue nil
+(defvar-local python-black-d-task-queue nil
   "Queue for pending formatting operations while the server is starting up.")
 
 (defun python-black-d-clear-queue ()
@@ -357,9 +357,11 @@ with `python-black-d-buffer' in the buffer-local
         (progn
           (python-black-d-start-server)
           (remove-hook 'before-save-hook 'python-black-buffer t)
-          (add-hook 'before-save-hook 'python-black-d-buffer nil t))
+          (add-hook 'before-save-hook 'python-black-d-buffer nil t)
+          (add-hook 'kill-buffer-hook 'python-black-d-stop-server t))
       (python-black-d-stop-server)
-      (remove-hook 'before-save-hook 'python-black-d-buffer t))))
+      (remove-hook 'before-save-hook 'python-black-d-buffer t)
+      (remove-hook 'kill-buffer-hook 'python-black-d-stop-server t))))
 
 (add-hook 'python-black-on-save-mode-hook 'python-black-d-toggle)
 

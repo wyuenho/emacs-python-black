@@ -197,8 +197,8 @@ This looks for ‘[tool.black]’ in a ‘pyproject.toml’ file."
 (defun python-black-d-process-buffer ()
   "Process buffer for `python-black-d-process'."
   (or (get-buffer python-black-d-process-buffer-name)
-      (with-current-buffer (get-buffer-create
-                            python-black-d-process-buffer-name)
+      (with-current-buffer
+          (get-buffer-create python-black-d-process-buffer-name)
         (special-mode)
         (read-only-mode 1)
         (current-buffer))))
@@ -313,7 +313,8 @@ soon as the server is ready to accept requests."
     (kill-process python-black-d-process))
   (when (and python-black-d-process
              (buffer-live-p (process-buffer python-black-d-process)))
-    (kill-buffer (process-buffer python-black-d-process)))
+    (let ((kill-buffer-query-functions))
+      (kill-buffer (process-buffer python-black-d-process))))
   (python-black-d--clean-up))
 
 ;;;###autoload

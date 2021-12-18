@@ -198,7 +198,7 @@ This looks for ‘[tool.black]’ in a ‘pyproject.toml’ file."
   "Process buffer for `python-black-d-process'."
   (or (get-buffer python-black-d-process-buffer-name)
       (with-current-buffer
-          (get-buffer-create python-black-d-process-buffer-name)
+          (generate-new-buffer python-black-d-process-buffer-name)
         (special-mode)
         (read-only-mode 1)
         (current-buffer))))
